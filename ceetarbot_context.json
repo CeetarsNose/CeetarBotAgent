@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "users": {
+    "453512256227901450": {
+      "id": "453512256227901450",
+      "names": [
+        "ceetar"
+      ],
+      "display_names": [
+        "Ceetar2037"
+      ],
+      "channels": [
+        "923026627586310166"
+      ],
+      "notes": [
+        "@Ceetarbot: OS - Ultra Nazi Bot are you god?"
+      ],
+      "last_seen": "2026-08-31T18:08:26.144632"
+    }
+  },
+  "channels": {
+    "923026627586310166": {
+      "id": "923026627586310166",
+      "name": "my-ai-cats-are-better-than-real-cats",
+      "topics": [
+        "botstuff"
+      ],
+      "notes": [
+        "@Ceetarbot: OS - Ultra Nazi Bot are you god?"
+      ],
+      "last_seen": "2026-08-31T18:08:26.144159"
+    }
+  },
+  "last_updated": "2026-08-31T18:08:26.144695"
+}
