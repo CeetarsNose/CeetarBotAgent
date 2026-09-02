@@ -331,6 +331,83 @@ def remember_message(message):
     save_soul_text(updated)
 
 
+def normalize_message_payload(payload):
+    if payload is None:
+        return None
+    if isinstance(payload, str):
+        text = payload.strip()
+        return text or None
+    if isinstance(payload, dict):
+        for key in ("output", "content", "text", "message", "value", "url"):
+            if key in payload:
+                extracted = normalize_message_payload(payload[key])
+                if extracted is not None:
+                    return extracted
+        text = str(payload)
+        if text.startswith("{'output':") or text.startswith("{'content':"):
+            return text
+        return None
+    if isinstance(payload, (list, tuple)):
+        chunks = []
+        for item in payload:
+            extracted = normalize_message_payload(item)
+            if extracted is not None:
+                chunks.append(extracted)
+        joined = "\n".join(chunks)
+        return joined or None
+    for attr in ("output", "content", "text", "message", "value"):
+        if hasattr(payload, attr):
+            extracted = normalize_message_payload(getattr(payload, attr))
+            if extracted is not None:
+                return extracted
+    text = str(payload)
+    if text.startswith("ToolCallItem") or text.startswith("MessageOutputItem") or text.startswith("<agents."):
+        return None
+    text = text.strip()
+    return text or None
+
+
+async def safe_discord_send(channel, payload, label="payload"):
+    if channel is None:
+        return
+    normalized = normalize_message_payload(payload)
+    if normalized is None:
+        print(f"Skipping empty {label} send to {getattr(channel, 'id', 'unknown')}")
+        return
+
+    if len(normalized) > 4000:
+        normalized = normalized[:3900].rstrip() + "\n..."
+
+    try:
+        await channel.send(normalized)
+    except Exception as exc:
+        print(f"Failed to send {label} to channel {getattr(channel, 'id', 'unknown')}: {type(exc).__name__}: {exc}")
+        print(f"Payload type: {type(payload).__name__}, repr: {repr(payload)[:800]}")
+
+
+async def send_agent_result(channel, result):
+    if result is None:
+        return
+    try:
+        final_output = getattr(result, "final_output", None)
+        if final_output not in (None, ""):
+            await safe_discord_send(channel, final_output, "final_output")
+    except Exception as exc:
+        print(f"Error sending final_output: {type(exc).__name__}: {exc}")
+
+    try:
+        tool_items = get_result_tool_items(result)
+        for item in tool_items or []:
+            if is_channel_selection_tool_result(item):
+                continue
+            payload = getattr(item, "output", item)
+            if payload is None:
+                continue
+            await safe_discord_send(channel, payload, "tool_output")
+    except Exception as exc:
+        print(f"Error sending tool output: {type(exc).__name__}: {exc}")
+
+
 intents = discord.Intents.all()
 intents.message_content = True
 
@@ -374,21 +451,20 @@ async def on_message(message):
 
     r=random.randrange(0,180)
     if (message.author.bot == False and (bot.user.mentioned_in(message) or (r==32))):
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, message.content)
-        target_channel = message.channel
-        selected_channel_id = extract_selected_channel(result)
-        if selected_channel_id:
-            target_channel = bot.get_channel(selected_channel_id) or target_channel
-
-        await target_channel.send(result.final_output)
-        tool_items = get_result_tool_items(result)
-        if tool_items:
-            for item in tool_items:
-                if is_channel_selection_tool_result(item):
-                    continue
-                payload = getattr(item, "output", item)
-                await target_channel.send(str(payload))
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, message.content)
+            target_channel = message.channel
+            # Always reply in the channel the message came from for direct user mentions/random replies.
+            # Ignore cross-channel selection for these in-thread responses.
+            await send_agent_result(target_channel, result)
+        except Exception as exc:
+            print(f"Error processing message in on_message: {type(exc).__name__}: {exc}")
+            print(f"Message author: {message.author} channel: {message.channel} content: {message.content!r}")
+            try:
+                await message.channel.send("Oops, that reply broke while generating output.")
+            except Exception as send_exc:
+                print(f"Fallback send failed: {type(send_exc).__name__}: {send_exc}")
 
 @tasks.loop(seconds=28177)
 async def chat_skynet():
@@ -434,16 +510,14 @@ async def chat_skynet():
         "Generate a completion that fits the tone of the recent chat and directly answers the custom prompt."
     )
     print(f"hi: {prompt}")
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, prompt)
-    if channel is not None:
-        await channel.send(result.final_output)
-    tool_items = get_result_tool_items(result)
-    if tool_items:
-        for item in tool_items:
-            payload = getattr(item, "output", item)
-            if channel is not None and len(payload) < 2000:
-                await channel.send(str(payload))
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, prompt)
+        if channel is not None:
+            await send_agent_result(channel, result)
+    except Exception as exc:
+        print(f"Error in chat_skynet generation: {type(exc).__name__}: {exc}")
+        print(f"Prompt: {prompt!r}")
     
     return
 
