@@ -10,12 +10,50 @@
         "Ceetar2037"
       ],
       "channels": [
-        "923026627586310166"
+        "923026627586310166",
+        "739580383640813590"
       ],
       "notes": [
-        "@Ceetarbot: OS - Ultra Nazi Bot are you god?"
+        "@Ceetarbot: OS - Ultra Nazi Bot are you god?",
+        "@Ceetarbot: OS - Ultra Nazi Bot psst it's September",
+        "@Ceetarbot: OS - Ultra Nazi Bot are you still drunk, or did you sleep it off?",
+        "@Ceetarbot: OS - Ultra Nazi Bot how we doing man, you knock down that castle yet?"
       ],
-      "last_seen": "2026-08-31T18:08:26.144632"
+      "last_seen": "2026-09-02T19:01:13.220385+00:00"
+    },
+    "650665341420044298": {
+      "id": "650665341420044298",
+      "names": [
+        "_lelfe"
+      ],
+      "display_names": [
+        "Dr. Lady SassCuck Nefarious, PHD"
+      ],
+      "channels": [
+        "739905416863023195",
+        "739580383640813590"
+      ],
+      "notes": [
+        "@Ceetarbot: OS - Ultra Nazi Bot are we all gonna die?",
+        "It's not though. It's actually Smarch"
+      ],
+      "last_seen": "2026-09-01T04:42:37.952927+00:00"
+    },
+    "592015438217740319": {
+      "id": "592015438217740319",
+      "names": [
+        "tfence"
+      ],
+      "display_names": [
+        "tfensimplicityiskey"
+      ],
+      "channels": [
+        "753703889756356739"
+      ],
+      "notes": [
+        "He doesnt deal with old testament bs"
+      ],
+      "last_seen": "2026-09-01T23:10:08.075381+00:00"
     }
   },
   "channels": {
@@ -26,10 +64,44 @@
         "botstuff"
       ],
       "notes": [
-        "@Ceetarbot: OS - Ultra Nazi Bot are you god?"
+        "@Ceetarbot: OS - Ultra Nazi Bot are you god?",
+        "@Ceetarbot: OS - Ultra Nazi Bot are you still drunk, or did you sleep it off?",
+        "@Ceetarbot: OS - Ultra Nazi Bot how we doing man, you knock down that castle yet?"
       ],
-      "last_seen": "2026-08-31T18:08:26.144159"
+      "last_seen": "2026-09-02T19:01:13.219921+00:00"
+    },
+    "739905416863023195": {
+      "id": "739905416863023195",
+      "name": "vaccination-room",
+      "topics": [
+        "botstuff"
+      ],
+      "notes": [
+        "@Ceetarbot: OS - Ultra Nazi Bot are we all gonna die?"
+      ],
+      "last_seen": "2026-08-31T19:32:24.175434+00:00"
+    },
+    "739580383640813590": {
+      "id": "739580383640813590",
+      "name": "newshole",
+      "topics": [
+        "botstuff"
+      ],
+      "notes": [
+        "@Ceetarbot: OS - Ultra Nazi Bot psst it's September",
+        "It's not though. It's actually Smarch"
+      ],
+      "last_seen": "2026-09-01T04:42:37.952838+00:00"
+    },
+    "753703889756356739": {
+      "id": "753703889756356739",
+      "name": "also-not-baseball",
+      "topics": [],
+      "notes": [
+        "He doesnt deal with old testament bs"
+      ],
+      "last_seen": "2026-09-01T23:10:08.074762+00:00"
     }
   },
-  "last_updated": "2026-08-31T18:08:26.144695"
+  "last_updated": "2026-09-02T19:01:13.220403+00:00"
 }
