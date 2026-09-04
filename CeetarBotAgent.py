@@ -148,8 +148,25 @@ async def on_message(message):
     r=random.randrange(0,180)
     if (message.author.bot == False and (bot.user.mentioned_in(message) or (r==32))):
         try:
+            # Build prompt with message content
+            prompt_text = message.content
+            
+            # Check for attachments (images, gifs, files, etc.)
+            if message.attachments:
+                attachment_info = []
+                for attachment in message.attachments:
+                    attachment_desc = f"- {attachment.filename} ({attachment.content_type}, {attachment.size} bytes)"
+                    attachment_info.append(attachment_desc)
+                    # Add URL if it's an image/gif so the agent can analyze it
+                    if attachment.content_type and ("image" in attachment.content_type or "video" in attachment.content_type):
+                        attachment_info.append(f"  URL: {attachment.url}")
+                
+                if attachment_info:
+                    prompt_text += "\n\n[Attachments in message]:\n" + "\n".join(attachment_info)
+                    prompt_text += "\nPlease analyze and reference these attachments in your reply."
+            
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, message.content)
+            result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, prompt_text)
             target_channel = message.channel
             # Always reply in the channel the message came from for direct user mentions/random replies.
             # Ignore cross-channel selection for these in-thread responses.
@@ -549,6 +566,7 @@ async def send_agent_result(channel, result):
             if payload is None:
                 continue
             print(f"payload: {payload}")
+            payload=tool_items[0]
             if await safe_send_image_from_tool(channel, payload):
                 continue
 
@@ -560,6 +578,17 @@ async def send_agent_result(channel, result):
 def extract_image_base64(payload):
     if payload is None:
         return None
+
+    # First, try to extract from item.raw_item.result directly
+    if hasattr(payload, "raw_item") and hasattr(payload.raw_item, "result"):
+        raw_result = payload.raw_item.result
+        if isinstance(raw_result, str):
+            text = raw_result.strip()
+            if text and len(text) > 200:
+                if text.startswith("data:image/") and ";base64," in text:
+                    text = text.split(";base64,", 1)[1]
+                if all(ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r" for ch in text):
+                    return text
 
     queue = [payload]
     seen = set()
@@ -575,7 +604,7 @@ def extract_image_base64(payload):
                     queue.append(current[key])
             continue
 
-        for attr in ("result", "image", "data", "output", "content", "base64", "b64", "image_base64"):
+        for attr in ("result", "image", "data", "output", "content", "base64", "b64", "image_base64", "raw_item"):
             if hasattr(current, attr):
                 queue.append(getattr(current, attr))
                 break
