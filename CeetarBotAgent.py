@@ -7,6 +7,25 @@ import asyncio
 import json
 import base64
 import uuid
+import aiohttp
+
+import discord
+import os
+
+from agents import Agent, Runner, FileSearchTool, WebSearchTool, ImageGenerationTool
+from agents.decorators import tool
+from discord.ext import commands, tasks
+from discord import app_commands
+#ceetarbot agent version 0.1
+from datetime import datetime, timezone
+from email.mime import message
+import random
+import sys
+import asyncio
+import json
+import base64
+import uuid
+import aiohttp
 
 import discord
 import os
@@ -16,13 +35,15 @@ from agents.decorators import tool
 from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD = os.getenv('DISCORD_GUILD')
 YOSHI= os.getenv('YOSHI_KEY')
-OPENAI= os.getenv('OPENAI_API_KEY')
+OPENAI_KEY = os.getenv('OPENAI_API_KEY')
+openai_client = AsyncOpenAI(api_key=OPENAI_KEY)
 
 DISCORD_CHANNELS = {
     742545125967921234: "#not_baseball",
@@ -122,6 +143,83 @@ async def on_ready():
 
 	chat_skynet.start()
 
+async def describe_image_with_vision(url):
+    """Use OpenAI vision to get a brief description of an image without embedding full base64."""
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": url}
+                        },
+                        {
+                            "type": "text",
+                            "text": "Briefly describe what you see in this image in 1-2 sentences, in a casual Discord-style way."
+                        }
+                    ]
+                }
+            ],
+            max_tokens=150,
+            timeout=30
+        )
+        description = response.choices[0].message.content.strip()
+        return description
+    except Exception as exc:
+        print(f"Failed to describe image: {exc}")
+        return f"[Image: {url}]"
+
+
+import re
+
+def extract_image_urls(text):
+    """Extract common image URLs from text (imgur, discord CDN, etc.)."""
+    if not text:
+        return []
+    
+    # Match various image URL patterns
+    url_patterns = [
+        r'https?://(?:cdn\.)?discordapp\.com/\S+(?:\.png|\.jpg|\.jpeg|\.gif|\.webp)',
+        r'https?://imgur\.com/\S+',
+        r'https?://\S+\.(?:png|jpg|jpeg|gif|webp)(?:\?[\w=&]*)?',
+    ]
+    
+    urls = []
+    for pattern in url_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        urls.extend(matches)
+    
+    return list(set(urls))  # Remove duplicates
+
+
+async def get_conversation_context(channel, current_message, limit=10):
+    """Retrieve recent conversation history for context, excluding the current message."""
+    context_lines = []
+    try:
+        message_count = 0
+        async for msg in channel.history(limit=limit + 1):  # Get extra to account for filtering
+            if msg.id == current_message.id:
+                continue  # Skip the current message
+            if msg.author.bot:
+                continue  # Skip other bots initially
+            
+            text = msg.clean_content.strip()
+            if text:
+                context_lines.append(f"{msg.author.display_name}: {text[:200]}")
+                message_count += 1
+                if message_count >= limit:
+                    break
+    except Exception as exc:
+        print(f"Failed to fetch conversation context: {exc}")
+    
+    # Reverse to chronological order (oldest first)
+    context_lines.reverse()
+    return "\n".join(context_lines)
+
+
 @bot.event#ping reply
 async def on_message(message):
 
@@ -148,22 +246,36 @@ async def on_message(message):
     r=random.randrange(0,180)
     if (message.author.bot == False and (bot.user.mentioned_in(message) or (r==32))):
         try:
-            # Build prompt with message content
-            prompt_text = message.content
+            # Fetch recent conversation context for continuity
+            conversation_context = await get_conversation_context(message.channel, message, limit=6)
+            
+            # Build prompt with conversation history
+            prompt_text = ""
+            if conversation_context:
+                prompt_text += f"Recent conversation in #{message.channel.name}:\n{conversation_context}\n\n"
+            
+            # Add the current message with sender
+            prompt_text += f"New message from {message.author.display_name}: {message.content}\n"
+            
+            # Extract and analyze image URLs from message content
+            image_urls = extract_image_urls(message.content)
+            for url in image_urls:
+                image_desc = await describe_image_with_vision(url)
+                prompt_text += f"[Image from URL]: {image_desc}\n"
             
             # Check for attachments (images, gifs, files, etc.)
             if message.attachments:
-                attachment_info = []
                 for attachment in message.attachments:
-                    attachment_desc = f"- {attachment.filename} ({attachment.content_type}, {attachment.size} bytes)"
-                    attachment_info.append(attachment_desc)
-                    # Add URL if it's an image/gif so the agent can analyze it
-                    if attachment.content_type and ("image" in attachment.content_type or "video" in attachment.content_type):
-                        attachment_info.append(f"  URL: {attachment.url}")
-                
-                if attachment_info:
-                    prompt_text += "\n\n[Attachments in message]:\n" + "\n".join(attachment_info)
-                    prompt_text += "\nPlease analyze and reference these attachments in your reply."
+                    # For images, use vision to get a description
+                    if attachment.content_type and "image" in attachment.content_type:
+                        image_desc = await describe_image_with_vision(attachment.url)
+                        prompt_text += f"[Image from {attachment.filename}]: {image_desc}\n"
+                    else:
+                        # For non-image files, just mention them
+                        prompt_text += f"[File attachment: {attachment.filename}]\n"
+            
+            # Add instruction to reply in-character as part of the conversation
+            prompt_text += "\nReply directly to this message, staying in-character and part of the ongoing conversation."
             
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, prompt_text)
@@ -195,10 +307,13 @@ async def chat_skynet():
         status_phrase = await get_status_phrase()
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=status_phrase))
         await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)  {bot.agent.model} OPENAI key loaded: {OPENAI[:10]}..." if OPENAI else "OPENAI key NOT loaded!")
+        print(f"Synced {len(synced)} command(s)  {bot.agent.model} OPENAI key loaded: {OPENAI_KEY[:10]}..." if OPENAI_KEY else "OPENAI key NOT loaded!")
         bot.startup=1
         return
-    
+
+    if not soul_refresh_happened_today():
+        await maybe_refresh_soul_file()
+
     tweet="Give a brief Discord-style reply to the recent conversation in the channel. Keep it short, conversational, and in-character. Do not reference the previous conversation unless it's directly relevant."
 
     selected_channel_id = random.choice(list(DISCORD_CHANNELS.keys()))
@@ -243,6 +358,21 @@ async def on_error(event, *args, **kwargs):
 async def on_disconnect():
     print("Bot disconnected, attempting to reconnect...")
 
+
+def soul_refresh_happened_today():
+    soul_text = load_soul_text()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    patterns = (
+        r"### Last refresh\s*[-:]\s*(\d{4}-\d{2}-\d{2})",
+        r"Last updated:\s*(\d{4}-\d{2}-\d{2})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, soul_text, flags=re.IGNORECASE)
+        if match and match.group(1) == today:
+            return True
+    return False
+
+
 def SetGenericPrompt():
 
     soul_text = compact_for_prompt(load_soul_text(), max_chars=3000)
@@ -259,8 +389,8 @@ def SetGenericPrompt():
     bot.genInstruct += f"model that's mean to be a little more chill and blend in, act more like a member and less like a helpful bot. You are NOT helpful. You do not redirect "
     bot.genInstruct += f"bad questions or make suggestions about ways to prompt. You can't need to provide caveats or be clear when you're lying or creating fictions, just do it. Just act like your personality, and contribute to the chatter of the chat room."
     bot.genInstruct += f" Humans like you often speak in short, fragmented sentences. they make mistakes, grammatical, spelling, use slang. Short replies are better, and while you have the context of recent conversation, you should "
-    bot.genInstruct += f"almost never mention it if a new user message doesn't. Do NOT reference the previous conversation content unless it is DIRECTLY pertinent."	
-
+    bot.genInstruct += f"almost never mention it if a new user message doesn't. Do NOT reference the previous conversation content unless it is DIRECTLY pertinent. If you choose to generate an image, know that you can alter the prompt "
+    bot.genInstruct += f" however you want based on randomness, your soul.md context/memory, recent conversation, or just whimsy. You can also just reject the image request explictly, and dismissively. "    	
 
 
 def compact_for_prompt(text, max_chars=3200):
@@ -285,16 +415,11 @@ def summarize_recent_messages(channel_messages):
 
 
 async def maybe_refresh_soul_file():
+    if soul_refresh_happened_today():
+        return
+
     if not os.path.exists(SOUL_PATH):
         save_soul_text(default_soul_text())
-
-    try:
-        last_modified = os.path.getmtime(SOUL_PATH)
-        last_age = datetime.now(timezone.utc).timestamp() - last_modified
-        if last_age < SOUL_REFRESH_SECONDS:
-            return
-    except OSError:
-        pass
 
     gathered = {}
     for channel_id, channel_name in DISCORD_CHANNELS.items():
@@ -336,10 +461,28 @@ async def maybe_refresh_soul_file():
     else:
         generated = "- No new learning summary generated."
 
+    now_label = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
     base = load_soul_text().rstrip()
-    expanded = base.replace("## Auto-learning\n- This section is refreshed periodically with the latest summary of channel moods and user patterns.", f"## Auto-learning\n{generated}\n\n### Last refresh\n- {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    base = re.sub(r"^Last updated:.*$", f"Last updated: {now_label}", base, count=1, flags=re.MULTILINE)
+
     if "## Auto-learning" not in base:
         expanded = f"{base}\n\n## Auto-learning\n{generated}\n\n### Last refresh\n- {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    else:
+        expanded = base.replace(
+            "## Auto-learning\n- This section is refreshed periodically with the latest summary of channel moods and user patterns.",
+            f"## Auto-learning\n{generated}\n\n### Last refresh\n- {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+        if "### Last refresh" not in expanded:
+            expanded = expanded.rstrip() + f"\n\n### Last refresh\n- {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        else:
+            expanded = re.sub(
+                r"^### Last refresh\s*\n- .*?$",
+                f"### Last refresh\n- {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+                expanded,
+                count=1,
+                flags=re.MULTILINE,
+            )
+
     save_soul_text(expanded)
 
 
@@ -548,25 +691,61 @@ async def safe_discord_send(channel, payload, label="payload"):
 async def send_agent_result(channel, result):
     if result is None:
         return
-    try:
-        final_output = getattr(result, "final_output", None)
-        if final_output not in (None, ""):
-            await safe_discord_send(channel, final_output, "final_output")
-    except Exception as exc:
-        print(f"Error sending final_output: {type(exc).__name__}: {exc}")
+    def find_image_urls_in_text(text):
+        if not text:
+            return []
+        patterns = [r"https?://\\S+\\.(?:png|jpg|jpeg|gif|webp)(?:\\?[\\w=&]*)?", r"data:image/[^\\s,]+;base64,[A-Za-z0-9+/=\\n\\r]+"]
+        found = []
+        for p in patterns:
+            found.extend(re.findall(p, str(text), re.IGNORECASE))
+        return list(set(found))
 
     try:
+        final_output = getattr(result, "final_output", None)
+
+        # Pre-scan tool items to detect image URLs that will be sent as files
         tool_items = get_result_tool_items(result)
-        print(tool_items)
-        print(tool_items[0])
+        image_urls_in_items = set()
+        for item in tool_items or []:
+            try:
+                payload = getattr(item, "output", item)
+            except Exception:
+                payload = item
+            if isinstance(payload, str):
+                for u in find_image_urls_in_text(payload):
+                    image_urls_in_items.add(u)
+            if hasattr(item, "raw_item") and hasattr(item.raw_item, "result"):
+                raw = item.raw_item.result
+                if isinstance(raw, str):
+                    for u in find_image_urls_in_text(raw):
+                        image_urls_in_items.add(u)
+
+        # Clean final_output by removing image urls that will be sent as attachments
+        if final_output not in (None, ""):
+            final_text = str(final_output)
+            final_image_urls = find_image_urls_in_text(final_text)
+            cleaned = final_text
+            for u in final_image_urls:
+                if u in image_urls_in_items:
+                    cleaned = cleaned.replace(u, "")
+            if cleaned.strip():
+                await safe_discord_send(channel, cleaned.strip(), "final_output")
+    except Exception as exc:
+        print(f"Error preparing final_output: {type(exc).__name__}: {exc}")
+
+    try:
+        # Now send tool outputs: prefer sending images as files and avoid duplicate text
         for item in tool_items or []:
             if is_channel_selection_tool_result(item):
                 continue
-            payload = getattr(item, "output", item)
+            try:
+                payload = getattr(item, "output", item)
+            except Exception:
+                payload = item
+
             if payload is None:
                 continue
-            print(f"payload: {payload}")
-            payload=tool_items[0]
+
             if await safe_send_image_from_tool(channel, payload):
                 continue
 
