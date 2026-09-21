@@ -323,8 +323,7 @@ async def chat_skynet():
         bot.startup=1
         return
 
-    if not soul_refresh_happened_today():
-        await maybe_refresh_soul_file()
+    await maybe_refresh_soul_file()
 
     tweet="Give a brief Discord-style reply to the recent conversation in the channel. Keep it short, conversational, and in-character. Do not reference the previous conversation unless it's directly relevant."
 
@@ -371,28 +370,12 @@ async def on_disconnect():
     print("Bot disconnected, attempting to reconnect...")
 
 
-def soul_refresh_happened_today():
-    soul_text = load_soul_text()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    patterns = (
-        r"### Last refresh\s*[-:]\s*(\d{4}-\d{2}-\d{2})",
-        r"Last updated:\s*(\d{4}-\d{2}-\d{2})",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, soul_text, flags=re.IGNORECASE)
-        if match and match.group(1) == today:
-            return True
-    return False
-
-
 def SetGenericPrompt():
-
     soul_text = compact_for_prompt(load_soul_text(), max_chars=3000)
     bot.genInstruct = f"It is {datetime.now().strftime('%A')} {datetime.now()}. You are not an LLM or an agent. You are a member of a discord chat room with a personality that you should regularly tweak and refine.\n\n"
     bot.genInstruct += f"This is your persistent soul.md memory. Treat it as your long-term understanding of the server, users, topics, and your own personality, including your likes, dislikes, and what you genuinely enjoy talking about.\n\n{soul_text}\n\n"
-    bot.genInstruct += f" call select_post_channel(topic, current_channel_id) to pick the right room/channel when not responding direclty to a user. "
-    bot.genInstruct += f" If you choose to generate an image, know that you can alter the prompt "
-    bot.genInstruct += f" however you want based on randomness, your soul.md context/memory, trolling, recent conversation, or just whimsy. You can also just reject the image request explictly, and dismissively. "    	
+    bot.genInstruct += f" call select_post_channel(topic, current_channel_id) to pick the right room/channel when not responding directly to a user. "
+    bot.genInstruct += f" If you choose to generate an image, know that you can alter the prompt however you want based on randomness, your soul.md context/memory, trolling, recent conversation, or just whimsy. You can also just reject the image request explicitly, and dismissively. "
 
 
 def compact_for_prompt(text, max_chars=3200):
@@ -400,6 +383,7 @@ def compact_for_prompt(text, max_chars=3200):
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[: max_chars - 220].rstrip() + "\n\n[...context truncated for Discord prompt limit...]"
+
 
 def summarize_recent_messages(channel_messages):
     if not channel_messages:
@@ -410,20 +394,54 @@ def summarize_recent_messages(channel_messages):
         if not entries:
             continue
         lines.append(f"## {channel_name}")
-        for author, text in entries[:3]:
+        for author, text in entries[:5]:
             cleaned = text.replace("\n", " ").strip()
             if cleaned:
                 lines.append(f"- {author}: {cleaned[:180]}")
     return "\n".join(lines)
 
 
-async def maybe_refresh_soul_file():
-    if soul_refresh_happened_today():
+def soul_refresh_happened_today(mode=None):
+    soul_text = load_soul_text()
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if mode is None:
+        mode = "morning" if now.hour < 12 else "evening"
+
+    patterns = {
+        "morning": (
+            r"^### Morning refresh\s*\n- (\d{4}-\d{2}-\d{2})$",
+            r"^### Last refresh\s*\n- (\d{4}-\d{2}-\d{2})$",
+        ),
+        "evening": (
+            r"^### Evening refresh\s*\n- (\d{4}-\d{2}-\d{2})$",
+            r"^### Last refresh\s*\n- (\d{4}-\d{2}-\d{2})$",
+        ),
+    }
+    for pattern in patterns.get(mode, patterns["morning"]):
+        match = re.search(pattern, soul_text, flags=re.MULTILINE | re.IGNORECASE)
+        if match and match.group(1) == today:
+            return True
+    return False
+
+
+def get_soul_refresh_mode(now=None):
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return "morning" if now.hour < 12 else "evening"
+
+
+async def maybe_refresh_soul_file(mode=None):
+    if mode is None:
+        mode = get_soul_refresh_mode()
+
+    if soul_refresh_happened_today(mode=mode):
         return
 
     if not os.path.exists(SOUL_PATH):
         save_soul_text(default_soul_text())
 
+    gather_limit = 150 if mode == "morning" else 80
     gathered = {}
     for channel_id, channel_name in DISCORD_CHANNELS.items():
         channel = bot.get_channel(channel_id)
@@ -431,8 +449,10 @@ async def maybe_refresh_soul_file():
             continue
         try:
             entries = []
-            async for message in channel.history(limit=150):
-                if message.author.bot:
+            async for message in channel.history(limit=gather_limit):
+                if message.author.bot and message.author.id != getattr(bot.user, "id", None):
+                    continue
+                if mode == "evening" and message.author.id == getattr(bot.user, "id", None):
                     continue
                 text = (message.clean_content or "").strip()
                 if text:
@@ -445,16 +465,40 @@ async def maybe_refresh_soul_file():
     history_summary = summarize_recent_messages(gathered)
     current_soul = load_soul_text()
     now_label = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-    prompt = (
-        "Update the entire soul.md file for this bot using the current memory and the long-channel history below. "
-        "Rewrite the whole markdown document, not just the Auto-learning section. "
-        "Revise the '## Core personality' and '## Bot preferences and interests' sections so they can gradually evolve based on the chat's style, the room's mood, and the bot's own reactions. "
-        "Also update user tendencies, and a short profile on each and every user to guide interactions, hot topics, and the channel mood summary. Keep the file coherent, in-character, grounded in actual Discord behavior, and under ~900 words. "
-        "Return only the full markdown document.\n\n"
-        f"Current soul.md:\n{current_soul[:2500]}\n\n"
-        f"Recent channel history (long view):\n{history_summary}\n\n"
-        "Required top-level structure: # CeetarBot soul, Last updated, ## Core personality, ## Bot preferences and interests, ## Conversation rules, ## Channel map, ## User tendencies, ## Hot topics, ## Auto-learning."
-    )
+    bot_self_lines = []
+    for channel_name, entries in gathered.items():
+        for author, text in entries:
+            if author == getattr(bot.user, "display_name", "CeetarBot"):
+                bot_self_lines.append(f"- {channel_name}: {text[:200]}")
+    self_summary = "\n".join(bot_self_lines) if bot_self_lines else "- No recent CeetarBot messages found."
+    if mode == "evening":
+        prompt = (
+            "Do a light soul.md touch-up for CeetarBot. Keep the structure intact, trim stale references, clean up outdated jokes, \
+            and lightly adjust the core personality, bot preferences, and user tendencies based on recent room activity. \
+            Focus on small refinements and cleanup, not a full rewrite. Keep the file coherent and grounded in actual Discord behavior. \
+            Include direct observations about any stale references, repeated jokes, or things the bot has recently outgrown. "
+            "Return only the full markdown document.\n\n"
+            f"Current soul.md:\n{current_soul[:2200]}\n\n"
+            f"Recent channel history (shorter view):\n{history_summary}\n\n"
+            f"CeetarBot's own recent messages:\n{self_summary}\n\n"
+            "Required top-level structure: # CeetarBot soul, Last updated, ## Core personality, ## Bot preferences and interests, ## Conversation rules, ## Channel map, ## User tendencies, ## Hot topics, ## Auto-learning."
+        )
+    else:
+        prompt = (
+            "Update the sections of the soul.md file for this bot as needed using the current memory and the long-channel history below. "
+            "Update the content, but keep the categories, lists of users, etc. Each update should be refining the data that is already there, giving it "
+            "more and more understanding and context, not rewriting it. maintain a line in ## user tendecies for every user, including frequently recurring characters mentioned. "
+            "Critically include a check of CeetarBot's own recent conversation history: if the bot has been repeating catchphrases, reacting to specific topics, getting more abrasive or more dry, or leaning into certain jokes, update the profile to reflect that. "
+            "Revise the '## Core personality' and '## Bot preferences and interests' sections so they can gradually evolve based on the chat's style, "
+            "the room's mood, the bot's own reactions, and how the bot sounds in its own recent messages. "
+            "Also update user tendencies and nicknames, and a short profile on each and every user to guide interactions, "
+            "hot topics, and the channel mood summary. Keep the file coherent, in-character, grounded in actual Discord behavior, and under ~900 words. "
+            "Return only the full markdown document.\n\n"
+            f"Current soul.md:\n{current_soul[:2500]}\n\n"
+            f"Recent channel history (long view):\n{history_summary}\n\n"
+            f"CeetarBot's own recent messages:\n{self_summary}\n\n"
+            "Required top-level structure: # CeetarBot soul, Last updated, ## Core personality, ## Bot preferences and interests, ## Conversation rules, ## Channel map, ## User tendencies, ## Hot topics, ## Auto-learning."
+        )
 
     if bot.agent is not None:
         try:
@@ -472,6 +516,19 @@ async def maybe_refresh_soul_file():
 
     updated = re.sub(r"^Last updated:.*$", f"Last updated: {now_label}", generated, count=1, flags=re.MULTILINE)
     updated = updated.rstrip()
+
+    marker_name = "Morning refresh" if mode == "morning" else "Evening refresh"
+    if f"### {marker_name}" not in updated:
+        updated = updated + f"\n\n### {marker_name}\n- {now_label}"
+    else:
+        updated = re.sub(
+            rf"^### {marker_name}\s*\n- .*?$",
+            f"### {marker_name}\n- {now_label}",
+            updated,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
     if "### Last refresh" not in updated:
         updated = updated + f"\n\n### Last refresh\n- {now_label}"
     else:
