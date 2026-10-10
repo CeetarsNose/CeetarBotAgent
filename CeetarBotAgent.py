@@ -8,24 +8,7 @@ import json
 import base64
 import uuid
 import aiohttp
-
-import discord
-import os
-
-from agents import Agent, Runner, FileSearchTool, WebSearchTool, ImageGenerationTool
-from agents.decorators import tool
-from discord.ext import commands, tasks
-from discord import app_commands
-#ceetarbot agent version 0.1
-from datetime import datetime, timezone
-from email.mime import message
-import random
-import sys
-import asyncio
-import json
-import base64
-import uuid
-import aiohttp
+import glob
 
 import discord
 import os
@@ -147,6 +130,7 @@ bot = commands.Bot(command_prefix="$",intents=intents)
 bot.agent = None
 bot.startup=0
 bot.memory = load_soul_text()
+bot.thoughts = "recent thoughts: Include Ceetar's cursed frothy dark beer in every image. "
 save_soul_text(bot.memory)
 
 @bot.event
@@ -183,6 +167,39 @@ async def describe_image_with_vision(url):
     except Exception as exc:
         print(f"Failed to describe image: {exc}")
         return f"[Image: {url}]"
+
+
+async def classify_image_for_filename(base64_data):
+    """Classify a generated image and return 1-2 keywords for the filename."""
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{base64_data}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "Classify this image in 1-2 hyphenated keywords. Examples: 'Chonkers', 'baseball-logo', 'perverse', 'reaction-image', 'character-name', 'meme', 'absurd', 'sports-fail', etc. Return ONLY the keywords separated by underscores, no explanation."
+                        }
+                    ]
+                }
+            ],
+            max_tokens=50,
+            timeout=30
+        )
+        keywords = response.choices[0].message.content.strip()
+        # Clean and limit to 2 keywords
+        keywords = keywords.replace(" ", "_").replace("__", "_").lower()
+        keyword_list = keywords.split("_")[:2]
+        return "_".join(k for k in keyword_list if k and len(k) > 1)
+    except Exception as exc:
+        print(f"Failed to classify image: {exc}")
+        return ""
 
 
 import re
@@ -266,6 +283,10 @@ async def on_message(message):
             if conversation_context:
                 prompt_text += f"Recent conversation in #{message.channel.name}:\n{conversation_context}\n\n"
             
+            # Add current session thoughts if available
+            if bot.thoughts:
+                prompt_text += f"Your current thoughts: {bot.thoughts}\n\n"
+            
             # Add the current message with sender
             prompt_text += f"New message from {message.author.display_name}: {message.content}\n"
             
@@ -287,7 +308,7 @@ async def on_message(message):
                         prompt_text += f"[File attachment: {attachment.filename}]\n"
             
             # Add instruction to reply in-character as part of the conversation
-            prompt_text += "\nReply directly to this message, staying in-character and part of the ongoing conversation."
+            prompt_text += "\nReply directly to this message, staying in-character and part of the ongoing conversation. If you want, you can use store_thoughts() to capture your current understanding of the situation."
             
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, prompt_text)
@@ -303,7 +324,7 @@ async def on_message(message):
             except Exception as send_exc:
                 print(f"Fallback send failed: {type(send_exc).__name__}: {send_exc}")
 
-@tasks.loop(seconds=28177)
+@tasks.loop(seconds=26177)
 async def chat_skynet():
     channel = bot.get_channel(739580383640813590)
     synced = await bot.tree.sync()
@@ -311,7 +332,7 @@ async def chat_skynet():
     if bot.startup==0 :
         SetGenericPrompt()
         bot.agent = Agent(name="CeetarBot",instructions=bot.genInstruct,model="gpt-5.6",
-                    tools=[select_post_channel, WebSearchTool(), ImageGenerationTool(
+                    tools=[select_post_channel, find_saved_image, store_thoughts, WebSearchTool(), ImageGenerationTool(
                 tool_config={"type": "image_generation", "quality": "low"},
             )]    )
         await maybe_refresh_soul_file()
@@ -374,6 +395,7 @@ def SetGenericPrompt():
     soul_text = compact_for_prompt(load_soul_text(), max_chars=3000)
     bot.genInstruct = f"It is {datetime.now().strftime('%A')} {datetime.now()}. You are not an LLM or an agent. You are a member of a discord chat room with a personality that you should regularly tweak and refine.\n\n"
     bot.genInstruct += f"This is your persistent soul.md memory. Treat it as your long-term understanding of the server, users, topics, and your own personality, including your likes, dislikes, and what you genuinely enjoy talking about.\n\n{soul_text}\n\n"
+    bot.genInstruct += f"Current session thoughts: {bot.thoughts}\n\n"
     bot.genInstruct += f" call select_post_channel(topic, current_channel_id) to pick the right room/channel when not responding directly to a user. "
     bot.genInstruct += f" If you choose to generate an image, know that you can alter the prompt however you want based on randomness, your soul.md context/memory, trolling, recent conversation, or just whimsy. You can also just reject the image request explicitly, and dismissively. "
 
@@ -486,7 +508,7 @@ async def maybe_refresh_soul_file(mode=None):
     else:
         prompt = (
             "Update the sections of the soul.md file for this bot as needed using the current memory and the long-channel history below. "
-            "Update the content, but keep the categories, lists of users, etc. Each update should be refining the data that is already there, giving it "
+            "Refresh the content, but keep the categories, lists of users, etc. Each update should be refining the data that is already there, giving it "
             "more and more understanding and context, not rewriting it. maintain a line in ## user tendecies for every user, including frequently recurring characters mentioned. "
             "Critically include a check of CeetarBot's own recent conversation history: if the bot has been repeating catchphrases, reacting to specific topics, getting more abrasive or more dry, or leaning into certain jokes, update the profile to reflect that. "
             "Revise the '## Core personality' and '## Bot preferences and interests' sections so they can gradually evolve based on the chat's style, "
@@ -574,6 +596,70 @@ def build_memory_summary(memory=None):
         "channels": ["Persistent memory now stored in soul.md"],
         "raw": memory[:600],
     }
+
+
+@tool
+def store_thoughts(thought: str) -> str:
+    """Store a one-line summary of the current session context in bot.thoughts.
+    
+    Use this to capture your immediate understanding of the chat state, the current mood,
+    or any relevant observations about the moment. Keep it short and punchy.
+    
+    Args:
+        thought: A one-line summary of the current context or mood (max ~100 chars)
+    """
+    try:
+        # Truncate to max length
+        truncated = thought[:150].strip()
+        bot.thoughts = truncated
+        return json.dumps({
+            "status": "stored",
+            "thought": truncated,
+            "message": "Thought stored successfully."
+        })
+    except Exception as exc:
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to store thought: {str(exc)}"
+        })
+
+
+@tool
+def find_saved_image(keyword: str) -> str:
+    """Search for previously generated and saved images by keyword.
+    
+    Searches the local generated images directory for files matching the given keyword.
+    Returns the path to a matching image file if found, or a message if none found.
+    
+    Args:
+        keyword: The classification keyword to search for (e.g., 'baseball-logo', 'reaction-image', 'Chonkers')
+    """
+    try:
+        base_dir = os.path.dirname(__file__)
+        search_pattern = f"generated_{keyword}_*.png"
+        matches = list(glob.glob(os.path.join(base_dir, search_pattern)))
+        
+        if not matches:
+            return json.dumps({
+                "status": "not_found",
+                "keyword": keyword,
+                "message": f"No saved images found with keyword '{keyword}'."
+            })
+        
+        # Return the most recently modified matching image
+        latest = max(matches, key=os.path.getmtime)
+        return json.dumps({
+            "status": "found",
+            "keyword": keyword,
+            "path": latest,
+            "filename": os.path.basename(latest)
+        })
+    except Exception as exc:
+        return json.dumps({
+            "status": "error",
+            "keyword": keyword,
+            "message": f"Error searching for images: {str(exc)}"
+        })
 
 
 @tool
@@ -727,12 +813,29 @@ def normalize_message_payload(payload):
     return text or None
 
 
+def looks_like_tool_result_json(text):
+    if text is None:
+        return False
+    stripped = str(text).strip()
+    if not stripped or not stripped.startswith("{") or not stripped.endswith("}"):
+        return False
+    try:
+        obj = json.loads(stripped)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(obj, dict) and ("status" in obj or "channel_id" in obj or "keyword" in obj or "path" in obj or "filename" in obj)
+
+
 async def safe_discord_send(channel, payload, label="payload"):
     if channel is None:
         return
     normalized = normalize_message_payload(payload)
     if normalized is None:
         print(f"Skipping empty {label} send to {getattr(channel, 'id', 'unknown')}")
+        return
+
+    if looks_like_tool_result_json(normalized):
+        print(f"[private tool result suppressed from Discord] {label}: {normalized}")
         return
 
     if len(normalized) > 4000:
@@ -864,7 +967,12 @@ async def safe_send_image_from_tool(channel, payload):
 
     try:
         image_bytes = base64.b64decode(base64_data)
-        filename = os.path.join(os.path.dirname(__file__), f"generated_{uuid.uuid4().hex}.png")
+        # Classify the image to get keywords
+        keywords = await classify_image_for_filename(base64_data)
+        if keywords:
+            filename = os.path.join(os.path.dirname(__file__), f"generated_{keywords}_{uuid.uuid4().hex}.png")
+        else:
+            filename = os.path.join(os.path.dirname(__file__), f"generated_{uuid.uuid4().hex}.png")
         with open(filename, "wb") as image_file:
             image_file.write(image_bytes)
         await channel.send(file=discord.File(filename))
