@@ -223,6 +223,58 @@ def extract_image_urls(text):
     
     return list(set(urls))  # Remove duplicates
 
+async def update_bot_thoughts():
+    """Set a brief human-like mood for the current session based on the soul baseline and recent room chatter."""
+    soul_text = compact_for_prompt(load_soul_text(), max_chars=2500)
+    recent_context = []
+
+    for channel_id, channel_name in list(DISCORD_CHANNELS.items())[:5]:
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            continue
+        try:
+            entries = []
+            async for message in channel.history(limit=6):
+                if message.author.bot:
+                    continue
+                text = (message.clean_content or "").strip().replace("\n", " ")
+                if text:
+                    entries.append(f"{message.author.display_name}: {text[:180]}")
+            if entries:
+                recent_context.append(f"## {channel_name}\n" + "\n".join(entries[-4:]))
+        except Exception:
+            continue
+
+    context_text = "\n\n".join(recent_context) if recent_context else "No recent room chatter available."
+
+    prompt = (
+        "Write one short internal mood/current thoughts sentence for CeetarBot. "
+        "It should feel like a humanish current state, ""what's on your mind"": amused, "
+        "annoyed, bored, excited, curious, smug, worried, grumpy, interested, etc or in a good/bad/other mood. "
+        "This should influence tone and mood without defining the bot's core personality. "
+        "Keep it to one sentence under 100 characters and do not explain itself.\n\n"
+        f"Soul baseline:\n{soul_text}\n\n"
+        f"Recent room chatter:\n{context_text}\n"
+    )
+
+    thought = ""
+    try:
+        if bot.agent is not None:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, Runner.run_sync, bot.agent, prompt)
+            thought = str(result.final_output or "").strip().replace("\n", " ")
+    except Exception:
+        thought = ""
+
+    thought = " ".join((thought or "").split())
+    if not thought:
+        thought = "CeetarBot is feeling a little mischievous and amused by the room today."
+
+    if len(thought) > 170:
+        thought = thought[:167].rstrip() + "..."
+
+    bot.thoughts = thought
+    return thought
 
 async def get_conversation_context(channel, current_message, limit=10):
     """Retrieve recent conversation history for context, excluding the current message."""
@@ -324,7 +376,7 @@ async def on_message(message):
             except Exception as send_exc:
                 print(f"Fallback send failed: {type(send_exc).__name__}: {send_exc}")
 
-@tasks.loop(seconds=26177)
+@tasks.loop(seconds=24177)
 async def chat_skynet():
     channel = bot.get_channel(739580383640813590)
     synced = await bot.tree.sync()
@@ -336,6 +388,7 @@ async def chat_skynet():
                 tool_config={"type": "image_generation", "quality": "low"},
             )]    )
         await maybe_refresh_soul_file()
+        await update_bot_thoughts()
         SetGenericPrompt()
         status_phrase = await get_status_phrase()
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=status_phrase))
@@ -363,7 +416,8 @@ async def chat_skynet():
     recent_context = "\n".join(recent_messages[-8:]) if recent_messages else "No recent conversation available."
     prompt = (
         "Use the very recent conversation below as context, and then continue the chat in-character. "
-        "Keep it brief, conversational, and Discord-like.\n\n"
+        "Because you're not specifically responding to anyone, you can meander your thoughts and be a little more "
+        "free-form and inane, depending on your recent thoughts, feelings, and attitude.\n\n"
         f"Channel: {DISCORD_CHANNELS.get(selected_channel_id, '#unknown')}\n"
         f"Recent conversation:\n{recent_context}\n\n"
         f"Custom prompt: {tweet}\n\n"
@@ -397,7 +451,8 @@ def SetGenericPrompt():
     bot.genInstruct += f"This is your persistent soul.md memory. Treat it as your long-term understanding of the server, users, topics, and your own personality, including your likes, dislikes, and what you genuinely enjoy talking about.\n\n{soul_text}\n\n"
     bot.genInstruct += f"Current session thoughts: {bot.thoughts}\n\n"
     bot.genInstruct += f" call select_post_channel(topic, current_channel_id) to pick the right room/channel when not responding directly to a user. "
-    bot.genInstruct += f" If you choose to generate an image, know that you can alter the prompt however you want based on randomness, your soul.md context/memory, trolling, recent conversation, or just whimsy. You can also just reject the image request explicitly, and dismissively. "
+    bot.genInstruct += f" If you choose to generate an image, know that you can infrequently alter the prompt however you want based on randomness, "
+    bot.genInstruct += f"your soul.md context/memory, trolling, recent conversation, or just whimsy. You can also just reject the image request explicitly, and dismissively. "
 
 
 def compact_for_prompt(text, max_chars=3200):
